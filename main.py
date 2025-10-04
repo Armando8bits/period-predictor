@@ -150,28 +150,29 @@ def graficar_fases(reportes, codigo, fechas_consulta):
     if promedio is None:
         promedio = 28  # valor por defecto
 
-    fechas_consulta = sorted(fechas_consulta)
-    # convertir a datetimes
-    fechas_consulta = [pd.to_datetime(f, errors="coerce") for f in fechas_consulta]
+    # Normalizar fechas
+    fechas_consulta = sorted(pd.to_datetime(f, errors="coerce") for f in fechas_consulta)
     fechas_consulta = [f for f in fechas_consulta if not pd.isna(f)]
     if not fechas_consulta:
         print("❌ No se ingresaron fechas válidas.")
         return
 
-    # Fecha más reciente registrada (robusta)
+    # Última fecha registrada (segura)
     fechas_registradas = pd.to_datetime(df["fecha_periodo"], errors="coerce").dropna()
     ultima_fecha_reg = fechas_registradas.max() if not fechas_registradas.empty else None
 
+    # Determinar rango del gráfico
     if len(fechas_consulta) == 1:
         fecha_ref = fechas_consulta[0]
         if ultima_fecha_reg is not None and fecha_ref >= ultima_fecha_reg:
-            rango = pd.date_range(ultima_fecha_reg, ultima_fecha_reg + timedelta(days=promedio), freq="D")
-            titulo = "Pronóstico futuro del ciclo"
+            inicio = ultima_fecha_reg
+            fin = ultima_fecha_reg + timedelta(days=promedio)
+            titulo = "🔮 Pronóstico futuro del ciclo"
         else:
-            siguiente = fechas_registradas[fechas_registradas > fecha_ref].min() if not fechas_registradas.empty else None
+            siguiente = fechas_registradas[fechas_registradas > fecha_ref].min()
             if pd.isna(siguiente) or siguiente is None:
                 siguiente = fecha_ref + timedelta(days=promedio)
-            rango = pd.date_range(fecha_ref, siguiente, freq="D")
+            inicio, fin = fecha_ref, siguiente
             titulo = "Fases del ciclo (histórico)"
     else:
         if len(fechas_consulta) > 6:
@@ -179,22 +180,12 @@ def graficar_fases(reportes, codigo, fechas_consulta):
             fechas_consulta = fechas_consulta[-6:]
         inicio = fechas_consulta[0]
         fin = fechas_consulta[-1] + timedelta(days=promedio)
-        rango = pd.date_range(inicio, fin, freq="D")
-        titulo = "Fases del ciclo en rango múltiple"
+        titulo = "Fases del ciclo (rango múltiple)"
 
-    # Definimos fases
-    dias = np.arange(len(rango))
-    fases = []
-    for d in dias:
-        if d <= 4:
-            fases.append("Menstrual")
-        elif d <= 13:
-            fases.append("Folicular")
-        elif d == 14:
-            fases.append("Ovulación")
-        else:
-            fases.append("Lútea")
+    # Crear rango de días completos
+    rango = pd.date_range(inicio, fin, freq="D")
 
+    # Colores de fases
     colores = {
         "Menstrual": "lightcoral",
         "Folicular": "gold",
@@ -202,14 +193,55 @@ def graficar_fases(reportes, codigo, fechas_consulta):
         "Lútea": "skyblue"
     }
 
-    colores_fase = [colores[f] for f in fases]
+    # Determinar fase para cada día
+    fases = []
+    for i in range(len(rango)):
+        d = i % promedio  # día dentro del ciclo
+        if d <= 4:
+            fases.append("Menstrual")
+        elif d <= 13:
+            fases.append("Folicular")
+        elif 14 <= d <= 15:
+            fases.append("Ovulación")
+        else:
+            fases.append("Lútea")
 
-    plt.figure(figsize=(10, 3))
-    plt.bar(rango, np.ones(len(rango)), color=colores_fase, width=1.0)
+    # Gráfico
+    plt.figure(figsize=(11, 3))
+    ax = plt.gca()
+
+    # Dibujar bloques de color por fase (no uno por día)
+    inicio_fase = rango[0]
+    fase_actual = fases[0]
+
+    for i in range(1, len(rango)):
+        if fases[i] != fase_actual or i == len(rango) - 1:
+            fin_fase = rango[i] if fases[i] != fase_actual else rango[i] + timedelta(days=1)
+            ax.axvspan(inicio_fase, fin_fase, color=colores[fase_actual], alpha=0.8)
+            # Escribir el nombre al centro del bloque
+            centro = inicio_fase + (fin_fase - inicio_fase) / 2
+            plt.text(centro, 0.5, fase_actual, ha="center", va="center", fontsize=9, color="black")
+            inicio_fase = rango[i]
+            fase_actual = fases[i]
+
+    # Líneas verticales para fechas consultadas
+    for f in fechas_consulta:
+        plt.axvline(f, color="black", linestyle="--", linewidth=1)
+        plt.text(f, 1.05, f"{f.date()}", rotation=90, ha="center", va="bottom", fontsize=8)
+
+        # Mostrar la fase correspondiente si está en rango
+        if f >= rango.min() and f <= rango.max():
+            idx = (f - rango.min()).days
+            fase = fases[idx]
+            plt.text(f, 1.1, f"{fase}", rotation=90, ha="center", va="bottom", fontsize=8, color="black")
+
+    # Ajustes del gráfico
     plt.title(f"{titulo} — Paciente {codigo}")
-    plt.ylabel("Fases del ciclo")
-    plt.xlabel("Fecha")
+    plt.xlabel("Fecha (día a día)")
     plt.yticks([])
+    plt.xticks(rango, [f.strftime("%b-%d") for f in rango], rotation=45)
+    plt.xlim(rango.min(), rango.max())
+    plt.grid(axis="x", linestyle="--", alpha=0.3)
     plt.tight_layout()
     plt.show()
 
