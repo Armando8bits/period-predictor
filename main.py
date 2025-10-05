@@ -169,9 +169,15 @@ def graficar_fases(reportes, codigo, fechas_consulta):
 
     # Definir rango de días a mostrar (~1 mes)
     dias_mostrar = 30
-    fecha_ref = fechas_consulta[len(fechas_consulta)//2]  # fecha central si hay varias
-    fecha_inicio = fecha_ref - timedelta(days=dias_mostrar // 2)
-    fecha_fin = fecha_ref + timedelta(days=dias_mostrar // 2)
+    if len(fechas_consulta) == 1:
+        fecha_ref = fechas_consulta[0]
+        fecha_inicio = fecha_ref - timedelta(days=dias_mostrar // 2)
+        fecha_fin = fecha_ref + timedelta(days=dias_mostrar // 2)
+    else:
+        # varias fechas → rango desde la más antigua hasta la más reciente + margen
+        margen = 2  # días extra a cada lado
+        fecha_inicio = min(fechas_consulta) - timedelta(days=margen)
+        fecha_fin = max(fechas_consulta) + timedelta(days=margen)
 
     rango = pd.date_range(fecha_inicio, fecha_fin, freq="D")
 
@@ -245,9 +251,11 @@ def graficar_fases(reportes, codigo, fechas_consulta):
     ax.set_xticklabels([d.strftime("%b-%d") for d in rango], rotation=45)
     ax.set_yticks([])
     plt.title(f"Fases del ciclo — Paciente {codigo}")
+    fecha_hora = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
+    ax.text(1.0, 1.02, f"Impreso el {fecha_hora}", transform=ax.transAxes, ha='right', va='bottom', fontsize=9, color='gray')
 
     # Leyenda explicativa
-    leyenda = [Line2D([0], [0], color='black', linestyle='--', lw=1, label=f'Fecha consultada {f.date()}')]
+    leyenda = [Line2D([0], [0], color='black', linestyle='--', lw=1, label='Fecha consultada')]
     # Añadir bloques de fases a la leyenda
     '''for fase, color in colores_fases.items():
         leyenda.append(Line2D([0], [0], color=color, lw=6, label=fase))'''
