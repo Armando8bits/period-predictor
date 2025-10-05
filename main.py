@@ -39,11 +39,9 @@ def cargar_datos():
 
     return pacientes, reportes
 
-
 def guardar_datos(pacientes, reportes):
     pacientes.to_csv(PACIENTES_FILE, index=False)
     reportes.to_csv(REPORTES_FILE, index=False)
-
 
 def registrar_paciente(pacientes, codigo, nombre):
     if codigo in pacientes["codigo"].values:
@@ -314,20 +312,26 @@ def menu():
         if opcion == "1":
             codigo = input("Código: ")
             nombre = input("Nombre: ")
-            pacientes = registrar_paciente(pacientes, codigo, nombre)
-            guardar_datos(pacientes, reportes)
+            if codigo and nombre:
+                pacientes = registrar_paciente(pacientes, codigo, nombre)
+                guardar_datos(pacientes, reportes)
+            else:
+                print("❌ Ingrese valores correctamente.")
 
         elif opcion == "2":
             codigo = input("Código de paciente: ")
             fecha = input("Fecha del periodo (YYYY-MM-DD): ")
-            reportes = registrar_periodo(reportes, pacientes, codigo, fecha)
-            guardar_datos(pacientes, reportes)
+            if codigo and fecha:
+                reportes = registrar_periodo(reportes, pacientes, codigo, fecha)
+                guardar_datos(pacientes, reportes)
+            else:
+                print("❌ Ingrese valores correctamente.")
 
         elif opcion == "3":
             pacientes, reportes = cargar_datos()
             codigo = input("Código de paciente: ")
             df_fases = calcular_fases_siguientes(reportes, codigo)
-            if df_fases is not None:
+            if codigo is not None and df_fases is not None:
                 print("\n📅 Estimación de fases del siguiente ciclo:")
                 for _, row in df_fases.iterrows():
                     print(f"\t🩸 {row['fase']}: Desde\t{row['inicio'].date()} \t→ {row['fin'].date()}")
@@ -343,7 +347,7 @@ def menu():
             print("Ingrese una o varias fechas separadas por comas (YYYY-MM-DD), o deje vacío para ver el ciclo estimado.")
             fechas_input = input("Fecha (YYYY-MM-DD): ")
             # Si el usuario ingresa fechas → las usamos
-            if fechas_input:
+            if fechas_input and codigo:
                 try:
                     fechas = [pd.to_datetime(f.strip(), errors="coerce") for f in fechas_input.split(",")]
                     fechas = [f for f in fechas if not pd.isna(f)]
@@ -355,7 +359,7 @@ def menu():
                 except Exception as e:
                     print(f"❌ Error al procesar fechas: {e}")
             # Si no ingresó nada → calcular el ciclo estimado desde la última fecha registrada
-            else:
+            elif codigo and not fechas_input:
                 print("📅 Mostrando el ciclo estimado a partir del último registro...")
                 df_fases = calcular_fases_siguientes(reportes, codigo)
                 if df_fases is not None:
@@ -363,6 +367,8 @@ def menu():
                     fechas = [df_fases["inicio"].min(), df_fases["fin"].max()]
                     print(' >> Cierre la ventana del gráfico para continuar...')
                     graficar_fases(reportes, codigo, fechas)
+            else:
+                print("❌ Ingrese valores correctamente.")
 
         elif opcion == "0":
             print("👋 Saliendo del sistema...")
