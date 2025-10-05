@@ -3,6 +3,7 @@ import numpy as np
 import matplotlib.pyplot as plt
 from matplotlib.lines import Line2D
 from datetime import datetime, timedelta
+from matplotlib.patches import Patch
 
 PACIENTES_FILE = "pacientes.csv"
 REPORTES_FILE = "reportes.csv"
@@ -160,18 +161,17 @@ def graficar_fases(reportes, codigo, fechas_consulta):
 
     # Última fecha registrada
     fechas_registradas = pd.to_datetime(df["fecha_periodo"], errors="coerce").dropna()
-    ultima_fecha_reg = fechas_registradas.max() if not fechas_registradas.empty else None
+    if not fechas_registradas.empty:
+        fecha_min_reg = fechas_registradas.min()
+        fecha_max_reg = fechas_registradas.max()
+    else:
+        fecha_min_reg = fecha_max_reg = None
 
     # Definir rango de días a mostrar (~1 mes)
     dias_mostrar = 30
     fecha_ref = fechas_consulta[len(fechas_consulta)//2]  # fecha central si hay varias
     fecha_inicio = fecha_ref - timedelta(days=dias_mostrar // 2)
     fecha_fin = fecha_ref + timedelta(days=dias_mostrar // 2)
-
-    # Ajuste si fecha de consulta está muy cerca del final de registros
-    if ultima_fecha_reg and (ultima_fecha_reg - fecha_ref).days < dias_mostrar // 2:
-        fecha_fin = ultima_fecha_reg + timedelta(days=1)
-        fecha_inicio = fecha_fin - timedelta(days=dias_mostrar)
 
     rango = pd.date_range(fecha_inicio, fecha_fin, freq="D")
 
@@ -186,7 +186,10 @@ def graficar_fases(reportes, codigo, fechas_consulta):
     # Determinar fase de cada día
     fases = []
     for i in range(len(rango)):
-        d = (rango[i] - fechas_registradas.min()).days % promedio if not fechas_registradas.empty else i
+        if fechas_registradas.empty:
+            d = i
+        else:
+            d = (rango[i] - fecha_min_reg).days % promedio
         if d <= 4:
             fases.append("Menstrual")
         elif d <= 13:
@@ -207,9 +210,22 @@ def graficar_fases(reportes, codigo, fechas_consulta):
     for i in range(1, len(rango)):
         if fases[i] != fase_actual or i == len(rango) - 1:
             fin_fase = rango[i] if fases[i] != fase_actual else rango[i] + timedelta(days=1)
-            ax.axvspan(inicio_fase, fin_fase, color=colores_fases[fase_actual], alpha=0.8)
+            # Determinar si el bloque es estimación (fuera de registros)
+            estimacion = False
+            if fecha_min_reg and fecha_max_reg:
+                if fin_fase < fecha_min_reg or inicio_fase > fecha_max_reg:
+                    estimacion = True
+
+            color = colores_fases[fase_actual]
+            alpha = 0.4 if estimacion else 0.8
+            hatch = '///' if estimacion else None
+
+            ax.axvspan(inicio_fase, fin_fase, color=color, alpha=alpha, hatch=hatch)
+
+            # Escribir nombre de fase en el bloque
             centro = inicio_fase + (fin_fase - inicio_fase) / 2
             plt.text(centro, 0.5, fase_actual, ha="center", va="center", fontsize=9, color="black")
+
             inicio_fase = rango[i]
             fase_actual = fases[i]
 
@@ -235,7 +251,7 @@ def graficar_fases(reportes, codigo, fechas_consulta):
     # Añadir bloques de fases a la leyenda
     '''for fase, color in colores_fases.items():
         leyenda.append(Line2D([0], [0], color=color, lw=6, label=fase))'''
-    #ax.legend(handles=leyenda, loc='upper right')
+    leyenda.append(Patch(facecolor='gray', edgecolor='black', alpha=0.4, hatch='///', label='Estimación'))
     ax.legend(handles=leyenda, loc='upper right', title="Simbología:")
 
 
