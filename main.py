@@ -22,7 +22,7 @@ def cargar_datos():
     try:
         reportes = pd.read_csv(
             REPORTES_FILE,
-            dtype={"codigo": str, "duracion":int},
+            dtype={"codigo": str, "duracion":"Int64"},
             parse_dates=["fecha_periodo"],
             dayfirst=False
         )
@@ -35,7 +35,7 @@ def cargar_datos():
     if "codigo" in reportes.columns:
         reportes["codigo"] = reportes["codigo"].astype(str)
     if "duracion" in reportes.columns:
-        reportes["duracion"] = reportes["duracion"].astype(int)
+        reportes["duracion"] = reportes["duracion"].astype("Int64")
     if "fecha_periodo" in reportes.columns:
         reportes["fecha_periodo"] = pd.to_datetime(reportes["fecha_periodo"], errors="coerce")
 
@@ -81,7 +81,7 @@ def registrar_periodo(reportes, pacientes, codigo, fecha, duracion=5):
 
 
 # ==============================================================
-# PREDICCIÓN Y ESTADÍSTICA
+# CÁLCULO CENTRALIZADO DE FASES
 # ==============================================================
 
 def calcular_promedio_ciclo(reportes, codigo):
@@ -113,31 +113,51 @@ def calcular_promedio_ciclo(reportes, codigo):
 
     return int(round(promedio)), int(round(desviacion))
 
-def calcular_fases_siguientes(reportes, codigo):
+def obtener_duracion_menstrual(reportes, codigo):
+    """Obtiene la duración menstrual promedio para un paciente"""
+    df = reportes[reportes["codigo"].astype(str) == str(codigo)].copy()
+    if df.empty or "duracion" not in df.columns or df["duracion"].dropna().empty:
+        return 5  # valor por defecto
+    
+    return int(df["duracion"].dropna().mean())
+
+def calcular_fases_ciclo(reportes, codigo):
+    """
+    Función centralizada para calcular todas las fases del ciclo.
+    Devuelve un diccionario con:
+    - promedio: duración promedio del ciclo
+    - desviacion: desviación estándar del ciclo
+    - duracion_menstrual: duración promedio del sangrado
+    - fases: DataFrame con las fases (nombre, inicio, fin)
+    - ultima_fecha: última fecha registrada
+    - siguiente_periodo: fecha estimada del siguiente período
+    """
     df = reportes[reportes["codigo"].astype(str) == str(codigo)].copy()
     if df.empty:
-        print("❌ No hay datos para esa paciente.")
         return None
 
-    # Calcular promedio de ciclo
-    promedio, _ = calcular_promedio_ciclo(reportes, codigo)
+    # Calcular estadísticas básicas
+    promedio, desviacion = calcular_promedio_ciclo(reportes, codigo)
     if promedio is None:
-        promedio = 28  # valor por defecto
+        promedio = 28
+    
+    duracion_menstrual = obtener_duracion_menstrual(reportes, codigo)
 
-    # Última fecha registrada
-    fechas = pd.to_datetime(df["fecha_periodo"], errors="coerce").dropna()
-    if fechas.empty:
-        print("❌ No hay fechas válidas para esta paciente.")
+    # Obtener última fecha registrada
+    df["fecha_periodo"] = pd.to_datetime(df["fecha_periodo"], errors="coerce")
+    df = df.dropna(subset=["fecha_periodo"]).sort_values("fecha_periodo")
+    if df.empty:
         return None
 
-    ultima_fecha = fechas.max()
-    # Definir duración típica de cada fase
-    duracion_menstrual = 5
+    ultima_fila = df.iloc[-1]
+    ultima_fecha = ultima_fila["fecha_periodo"]
+
+    # Calcular fases basadas en la última fecha registrada
     duracion_folicular = 9
     duracion_ovulacion = 2
     duracion_lutea = promedio - (duracion_menstrual + duracion_folicular + duracion_ovulacion)
 
-    # Calcular fechas estimadas
+    # Calcular fechas estimadas de cada fase
     fases = {
         "Menstrual": (ultima_fecha, ultima_fecha + timedelta(days=duracion_menstrual - 1)),
         "Folicular": (ultima_fecha + timedelta(days=duracion_menstrual),
@@ -153,53 +173,46 @@ def calcular_fases_siguientes(reportes, codigo):
         {"fase": fase, "inicio": fechas[0], "fin": fechas[1]} for fase, fechas in fases.items()
     ])
 
-    return df_fases
+    siguiente_periodo = ultima_fecha + timedelta(days=promedio)
 
+    return {
+        "promedio": promedio,
+        "desviacion": desviacion,
+        "duracion_menstrual": duracion_menstrual,
+        "fases": df_fases,
+        "ultima_fecha": ultima_fecha,
+        "siguiente_periodo": siguiente_periodo
+    }
+
+def calcular_fases_siguientes(reportes, codigo):
+    """
+    Función de presentación - usa la lógica centralizada
+    """
+    resultado = calcular_fases_ciclo(reportes, codigo)
+    if resultado is None:
+        print("❌ No hay datos para esa paciente.")
+        return None
+    
+    return resultado["fases"]
 
 # ==============================================================
-# CONSULTA Y GRAFICADO DE FASES
+# GRAFICACIÓN (SOLO PARA VISUALIZACIÓN)
 # ==============================================================
 
-def calcular_fases_periodo(reportes, codigo):
+def graficar_fases(reportes, codigo, fechas_consulta):
     """
-    Calcula información del ciclo menstrual basado en registros históricos.
-    Devuelve: promedio del ciclo, próxima fecha estimada y las fases relevantes.
+    Función que solo se encarga de graficar, usando los datos calculados
     """
-    df = reportes[reportes["codigo"].astype(str) == str(codigo)].copy()
-    if df.empty:
-        return None, None, None, None
-
-    fechas = pd.to_datetime(df["fecha_periodo"], errors="coerce").dropna().sort_values()
-    if len(fechas) < 2:
-        return None, None, fechas.iloc[-1], None
-
-    # Diferencias entre periodos (ciclo promedio)
-    difs = fechas.diff().dropna().dt.days
-    promedio = int(difs.mean())
-    desviacion = int(difs.std() if not np.isnan(difs.std()) else 0)
-    ultima_fecha = fechas.max()
-    siguiente_estimado = ultima_fecha + timedelta(days=promedio)
-
-    # Fases estimadas según ciclo típico de 28 días
-    fases = [
-        ("Menstrual", 0, 4),
-        ("Folicular", 5, 13),
-        ("Ovulación", 14, 15),
-        ("Lútea", 16, promedio)
-    ]
-
-    return promedio, desviacion, siguiente_estimado, fases
-
-def graficar_fases(reportes, codigo, fechas_consulta, promedio=None):
-    df = reportes[reportes["codigo"].astype(str) == str(codigo)].copy()
-    if df.empty:
+    # Obtener datos calculados
+    datos_ciclo = calcular_fases_ciclo(reportes, codigo)
+    if datos_ciclo is None:
         print("❌ No hay datos para esa paciente.")
         return
-
-    if promedio is None:
-        promedio, _, _, _ = calcular_fases_periodo(reportes, codigo)
-        if promedio is None:
-            promedio = 28
+    
+    promedio = datos_ciclo["promedio"]
+    duracion_menstrual = datos_ciclo["duracion_menstrual"]
+    df_fases = datos_ciclo["fases"]
+    ultima_fecha = datos_ciclo["ultima_fecha"]
 
     # Normalizar fechas de consulta
     fechas_consulta = sorted(pd.to_datetime(f, errors="coerce") for f in fechas_consulta)
@@ -207,13 +220,6 @@ def graficar_fases(reportes, codigo, fechas_consulta, promedio=None):
     if not fechas_consulta:
         print("❌ No se ingresaron fechas válidas.")
         return
-
-    fechas_registradas = pd.to_datetime(df["fecha_periodo"], errors="coerce").dropna()
-    if not fechas_registradas.empty:
-        fecha_min_reg = fechas_registradas.min()
-        fecha_max_reg = fechas_registradas.max()
-    else:
-        fecha_min_reg = fecha_max_reg = None
 
     # --- Ajuste de rango ---
     dias_mostrar = 30
@@ -228,7 +234,7 @@ def graficar_fases(reportes, codigo, fechas_consulta, promedio=None):
 
     rango = pd.date_range(fecha_inicio, fecha_fin, freq="D")
 
-    # --- Fases ---
+    # --- Colores de fases ---
     colores_fases = {
         "Menstrual": "lightcoral",
         "Folicular": "gold",
@@ -236,44 +242,62 @@ def graficar_fases(reportes, codigo, fechas_consulta, promedio=None):
         "Lútea": "skyblue"
     }
 
-    fases = []
-    for i in range(len(rango)):
-        if fechas_registradas.empty:
-            d = i
-        else:
-            d = (rango[i] - fecha_min_reg).days % promedio
-        if d <= 4:
-            fases.append("Menstrual")
-        elif d <= 13:
-            fases.append("Folicular")
-        elif 14 <= d <= 15:
-            fases.append("Ovulación")
-        else:
-            fases.append("Lútea")
+    # --- Calcular fase para cada día del rango ---
+    fases_rango = []
+    for fecha in rango:
+        # Determinar qué fase corresponde a esta fecha
+        fase_encontrada = None
+        for _, fase in df_fases.iterrows():
+            if fase["inicio"] <= fecha <= fase["fin"]:
+                fase_encontrada = fase["fase"]
+                break
+        
+        if fase_encontrada is None:
+            # Si no está en ninguna fase calculada, calcular fase teórica
+            dias_desde_inicio = (fecha - ultima_fecha).days
+            dia_ciclo = dias_desde_inicio % promedio if dias_desde_inicio >= 0 else promedio + (dias_desde_inicio % promedio)
+            
+            if dia_ciclo < duracion_menstrual:
+                fase_encontrada = "Menstrual"
+            elif dia_ciclo <= duracion_menstrual + 9:  # Folicular
+                fase_encontrada = "Folicular"
+            elif dia_ciclo <= duracion_menstrual + 11:  # Ovulación
+                fase_encontrada = "Ovulación"
+            else:
+                fase_encontrada = "Lútea"
+        
+        fases_rango.append(fase_encontrada)
 
     # --- Gráfico ---
     fig, ax = plt.subplots(figsize=(12, 4))
     fig.canvas.manager.set_window_title("Línea de Tiempo de Período")
 
+    # Dibujar fases
     inicio_fase = rango[0]
-    fase_actual = fases[0]
+    fase_actual = fases_rango[0]
     for i in range(1, len(rango)):
-        if fases[i] != fase_actual or i == len(rango) - 1:
-            fin_fase = rango[i] if fases[i] != fase_actual else rango[i] + timedelta(days=1)
-            estimacion = False
-            if fecha_min_reg and fecha_max_reg:
-                if fin_fase < fecha_min_reg or inicio_fase > fecha_max_reg:
-                    estimacion = True
+        if fases_rango[i] != fase_actual or i == len(rango) - 1:
+            fin_fase = rango[i] if fases_rango[i] != fase_actual else rango[i] + timedelta(days=1)
+            
+            # Determinar si es estimación (fuera del rango de fases calculadas)
+            estimacion = not any(
+                (fase["inicio"] <= inicio_fase <= fase["fin"]) or 
+                (fase["inicio"] <= fin_fase <= fase["fin"])
+                for _, fase in df_fases.iterrows()
+            )
 
             color = colores_fases[fase_actual]
             alpha = 0.4 if estimacion else 0.8
             hatch = '///' if estimacion else None
 
             ax.axvspan(inicio_fase, fin_fase, color=color, alpha=alpha, hatch=hatch)
+            
+            # Etiqueta de fase
             centro = inicio_fase + (fin_fase - inicio_fase) / 2
             ax.text(centro, 0.5, fase_actual, ha="center", va="center", fontsize=9, color="black")
+            
             inicio_fase = rango[i]
-            fase_actual = fases[i]
+            fase_actual = fases_rango[i]
 
     # --- Líneas de fechas consultadas ---
     for f in fechas_consulta:
@@ -333,15 +357,12 @@ def menu():
             
             duracion_dias_input = input("Duración del periodo en días (opcional, por defecto 5): ")
             try:
-                # Intenta convertir la entrada a un entero
                 duracion_int = int(duracion_dias_input)
-                # 1. Si la conversión tiene éxito, verifica si el número es válido
                 if duracion_int >= 1:
-                    duracion_dias = duracion_int  # Es un entero >= 1, guárdalo.
+                    duracion_dias = duracion_int
                 else:
-                    duracion_dias = None  # El número es < 1, guarda None.
+                    duracion_dias = None
             except ValueError:
-                # 2. Si la conversión falla (no es un número), guarda None
                 duracion_dias = None
             reportes = registrar_periodo(reportes, pacientes, codigo, fecha, duracion_dias)
             guardar_datos(pacientes, reportes)
@@ -355,39 +376,43 @@ def menu():
                 for _, row in df_fases.iterrows():
                     print(f"\t🩸 {row['fase']}: Desde\t{row['inicio'].date()} \t→ {row['fin'].date()}")
 
-                # También puedes mostrar la fecha estimada del siguiente periodo
-                siguiente_inicio = df_fases.loc[df_fases['fase'] == 'Lútea', 'fin'].values[0]
-                siguiente_inicio = pd.to_datetime(siguiente_inicio) + timedelta(days=1)
-                print(f"\n\t🩸🔮 Próximo período estimado: {siguiente_inicio.date()}")
+                # Mostrar fecha estimada del siguiente periodo
+                datos_ciclo = calcular_fases_ciclo(reportes, codigo)
+                if datos_ciclo:
+                    siguiente_periodo = datos_ciclo["siguiente_periodo"]
+                    print(f"\n\t🩸🔮 Próximo período estimado: {siguiente_periodo.date()}")
 
         elif opcion == "4":
             pacientes, reportes = cargar_datos()
             codigo = input("Código de paciente: ")
+            if not codigo:
+                print("❌ Debe ingresar un código de paciente.")
+                continue
             print("Ingrese una o varias fechas separadas por comas (YYYY-MM-DD), o deje vacío para ver el ciclo estimado.")
             fechas_input = input("Fecha (YYYY-MM-DD): ")
-            # Si el usuario ingresa fechas → las usamos
-            if fechas_input and codigo:
+            
+            if fechas_input:
                 try:
                     fechas = [pd.to_datetime(f.strip(), errors="coerce") for f in fechas_input.split(",")]
                     fechas = [f for f in fechas if not pd.isna(f)]
                     if not fechas:
                         print("❌ No se ingresaron fechas válidas.")
-                    else:
-                        print(' >> Cierre la ventana del gráfico para continuar...')
-                        graficar_fases(reportes, codigo, fechas)
-                except Exception as e:
-                    print(f"❌ Error al procesar fechas: {e}")
-            # Si no ingresó nada → calcular el ciclo estimado desde la última fecha registrada
-            elif codigo and not fechas_input:
-                print("📅 Mostrando el ciclo estimado a partir del último registro...")
-                df_fases = calcular_fases_siguientes(reportes, codigo)
-                if df_fases is not None:
-                    # Extraemos el rango total de fechas estimadas
-                    fechas = [df_fases["inicio"].min(), df_fases["fin"].max()]
                     print(' >> Cierre la ventana del gráfico para continuar...')
                     graficar_fases(reportes, codigo, fechas)
+                except Exception as e:
+                    print(f"❌ Error al procesar fechas: {e}")
             else:
-                print("❌ Ingrese valores correctamente.")
+                print("📅 Mostrando el ciclo estimado a partir del último registro...")
+                datos_ciclo = calcular_fases_ciclo(reportes, codigo)
+                if datos_ciclo is not None:
+                    # Usar las fechas de inicio y fin de todas las fases
+                    fecha_inicio = datos_ciclo["fases"]["inicio"].min()
+                    fecha_fin = datos_ciclo["fases"]["fin"].max()
+                    fechas = [fecha_inicio, fecha_fin]
+                    print(' >> Cierre la ventana del gráfico para continuar...')
+                    graficar_fases(reportes, codigo, fechas)
+                else:
+                    print("❌ No se pudieron calcular las fases para este paciente.")
 
         elif opcion == "0":
             print("👋 Saliendo del sistema...")
