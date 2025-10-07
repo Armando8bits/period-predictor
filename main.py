@@ -22,18 +22,20 @@ def cargar_datos():
     try:
         reportes = pd.read_csv(
             REPORTES_FILE,
-            dtype={"codigo": str},
+            dtype={"codigo": str, "duracion":int},
             parse_dates=["fecha_periodo"],
             dayfirst=False
         )
     except FileNotFoundError:
-        reportes = pd.DataFrame(columns=["codigo", "fecha_periodo", "codigo"])
+        reportes = pd.DataFrame(columns=["codigo", "fecha_periodo", "duracion"])
     
     # Asegurar tipos y normalizar
     if "codigo" in pacientes.columns:
         pacientes["codigo"] = pacientes["codigo"].astype(str)
     if "codigo" in reportes.columns:
         reportes["codigo"] = reportes["codigo"].astype(str)
+    if "duracion" in reportes.columns:
+        reportes["duracion"] = reportes["duracion"].astype(int)
     if "fecha_periodo" in reportes.columns:
         reportes["fecha_periodo"] = pd.to_datetime(reportes["fecha_periodo"], errors="coerce")
 
@@ -52,14 +54,17 @@ def registrar_paciente(pacientes, codigo, nombre):
     return pacientes
 
 
-def registrar_periodo(reportes, pacientes, codigo, fecha):
+def registrar_periodo(reportes, pacientes, codigo, fecha, duracion=5):
+    if duracion is None or duracion < 1:
+        duracion = 5
+
     if str(codigo) not in pacientes["codigo"].astype(str).values:
         print("❌ Código no encontrado.")
         return reportes
     # Crear DataFrame nuevo con tipos definidos
     nueva_fila = pd.DataFrame.from_records(
-        [{"codigo": codigo, "fecha_periodo": pd.to_datetime(fecha)}],
-        columns=["codigo", "fecha_periodo"]
+        [{"codigo": codigo, "fecha_periodo": pd.to_datetime(fecha), "duracion": duracion}],
+        columns=["codigo", "fecha_periodo", "duracion"]
     )
 
     # Asegurar tipos antes de concatenar
@@ -71,7 +76,7 @@ def registrar_periodo(reportes, pacientes, codigo, fecha):
             reportes["fecha_periodo"] = pd.to_datetime(reportes["fecha_periodo"], errors="coerce")
 
         reportes = pd.concat([reportes, nueva_fila], ignore_index=True)
-    print(f"🩸 Periodo registrado para #{codigo} en fecha: {fecha}.")
+    print(f"🩸 Periodo registrado para #{codigo} en fecha: {fecha} (duración: {duracion} días).")
     return reportes
 
 
@@ -321,11 +326,25 @@ def menu():
         elif opcion == "2":
             codigo = input("Código de paciente: ")
             fecha = input("Fecha del periodo (YYYY-MM-DD): ")
-            if codigo and fecha:
-                reportes = registrar_periodo(reportes, pacientes, codigo, fecha)
-                guardar_datos(pacientes, reportes)
-            else:
+
+            if not codigo and not fecha:
                 print("❌ Ingrese valores correctamente.")
+                continue 
+            
+            duracion_dias_input = input("Duración del periodo en días (opcional, por defecto 5): ")
+            try:
+                # Intenta convertir la entrada a un entero
+                duracion_int = int(duracion_dias_input)
+                # 1. Si la conversión tiene éxito, verifica si el número es válido
+                if duracion_int >= 1:
+                    duracion_dias = duracion_int  # Es un entero >= 1, guárdalo.
+                else:
+                    duracion_dias = None  # El número es < 1, guarda None.
+            except ValueError:
+                # 2. Si la conversión falla (no es un número), guarda None
+                duracion_dias = None
+            reportes = registrar_periodo(reportes, pacientes, codigo, fecha, duracion_dias)
+            guardar_datos(pacientes, reportes)
 
         elif opcion == "3":
             pacientes, reportes = cargar_datos()
