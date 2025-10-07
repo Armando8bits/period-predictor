@@ -124,40 +124,41 @@ def obtener_duracion_menstrual(reportes, codigo):
 def calcular_fases_ciclo(reportes, codigo):
     """
     Función centralizada para calcular todas las fases del ciclo.
-    Devuelve un diccionario con:
-    - promedio: duración promedio del ciclo
-    - desviacion: desviación estándar del ciclo
-    - duracion_menstrual: duración promedio del sangrado
-    - fases: DataFrame con las fases (nombre, inicio, fin)
-    - ultima_fecha: última fecha registrada
-    - siguiente_periodo: fecha estimada del siguiente período
+    Ahora usa la estrategia de predicción avanzada.
     """
     df = reportes[reportes["codigo"].astype(str) == str(codigo)].copy()
     if df.empty:
         return None
 
-    # Calcular estadísticas básicas
-    promedio, desviacion = calcular_promedio_ciclo(reportes, codigo)
-    if promedio is None:
-        promedio = 28
+    # Usar predicción avanzada
+    fecha_predicha, rango_confianza, metadatos = predecir_proximo_ciclo(reportes, codigo)
     
-    duracion_menstrual = obtener_duracion_menstrual(reportes, codigo)
+    if fecha_predicha is None:
+        # Fallback a cálculo simple
+        promedio, desviacion = calcular_promedio_ciclo(reportes, codigo)
+        if promedio is None:
+            promedio = 28
+        fecha_predicha = df["fecha_periodo"].max() + timedelta(days=promedio)
+        metodo = "fallback_simple"
+    else:
+        promedio = metadatos["promedio_ciclo"]
+        desviacion = metadatos["desviacion_estandar"]
+        metodo = metadatos["metodo"]
 
-    # Obtener última fecha registrada
-    df["fecha_periodo"] = pd.to_datetime(df["fecha_periodo"], errors="coerce")
-    df = df.dropna(subset=["fecha_periodo"]).sort_values("fecha_periodo")
-    if df.empty:
-        return None
+    duracion_menstrual = obtener_duracion_menstrual_optima(reportes, codigo)
+    ultima_fecha = df["fecha_periodo"].max()
 
-    ultima_fila = df.iloc[-1]
-    ultima_fecha = ultima_fila["fecha_periodo"]
-
-    # Calcular fases basadas en la última fecha registrada
+    # Calcular fases (lógica existente mejorada)
     duracion_folicular = 9
     duracion_ovulacion = 2
     duracion_lutea = promedio - (duracion_menstrual + duracion_folicular + duracion_ovulacion)
 
-    # Calcular fechas estimadas de cada fase
+    # Asegurar duración lútea mínima
+    if duracion_lutea < 10:
+        duracion_lutea = 10
+        # Recalcular folicular para mantener el total
+        duracion_folicular = promedio - (duracion_menstrual + duracion_ovulacion + duracion_lutea)
+
     fases = {
         "Menstrual": (ultima_fecha, ultima_fecha + timedelta(days=duracion_menstrual - 1)),
         "Folicular": (ultima_fecha + timedelta(days=duracion_menstrual),
@@ -168,12 +169,9 @@ def calcular_fases_ciclo(reportes, codigo):
                   ultima_fecha + timedelta(days=promedio - 1))
     }
 
-    # Convertir a DataFrame
     df_fases = pd.DataFrame([
         {"fase": fase, "inicio": fechas[0], "fin": fechas[1]} for fase, fechas in fases.items()
     ])
-
-    siguiente_periodo = ultima_fecha + timedelta(days=promedio)
 
     return {
         "promedio": promedio,
@@ -181,7 +179,10 @@ def calcular_fases_ciclo(reportes, codigo):
         "duracion_menstrual": duracion_menstrual,
         "fases": df_fases,
         "ultima_fecha": ultima_fecha,
-        "siguiente_periodo": siguiente_periodo
+        "siguiente_periodo": fecha_predicha,
+        "rango_confianza": rango_confianza,
+        "metodo_prediccion": metodo,
+        "metadatos": metadatos
     }
 
 def calcular_fases_siguientes(reportes, codigo):
@@ -194,6 +195,147 @@ def calcular_fases_siguientes(reportes, codigo):
         return None
     
     return resultado["fases"]
+
+def calcular_estadisticas_ciclo_avanzado(reportes, codigo, pesos_recientes=0.6):
+    """
+    Calcula estadísticas del ciclo usando media móvil ponderada.
+    pesos_recientes: 0-1, qué tanto peso dar a ciclos recientes (0.6 = 60% a los 3 más recientes)
+    """
+    df = reportes[reportes["codigo"].astype(str) == str(codigo)].copy()
+    
+    # Normalizar fechas y ordenar
+    fechas = pd.to_datetime(df["fecha_periodo"], errors="coerce").dropna().sort_values().drop_duplicates()
+    
+    if len(fechas) < 2:
+        return None, None, None
+
+    # Calcular duraciones entre ciclos
+    difs = fechas.diff().dt.days.dropna().tolist()
+    
+    if not difs:
+        return None, None, None
+
+    # Estrategia según cantidad de datos disponibles
+    if len(difs) == 1:
+        # Solo un ciclo registrado → usar ese valor
+        promedio_ponderado = difs[0]
+        desviacion = 0
+        tendencia = 0
+        
+    elif len(difs) <= 3:
+        # Pocos ciclos → promedio simple
+        promedio_ponderado = np.mean(difs)
+        desviacion = np.std(difs)
+        tendencia = difs[-1] - difs[0]  # tendencia simple
+        
+    else:
+        # Suficientes datos → media móvil ponderada
+        n_recientes = max(2, len(difs) // 3)  # últimos 1/3 de ciclos
+        ciclos_recientes = difs[-n_recientes:]
+        ciclos_antiguos = difs[:-n_recientes]
+        
+        peso_recientes = pesos_recientes
+        peso_antiguos = 1 - peso_recientes
+        
+        avg_reciente = np.mean(ciclos_recientes)
+        avg_antiguo = np.mean(ciclos_antiguos) if ciclos_antiguos else avg_reciente
+        
+        promedio_ponderado = (avg_reciente * peso_recientes + 
+                            avg_antiguo * peso_antiguos)
+        
+        desviacion = np.std(difs)
+        
+        # Calcular tendencia (pendiente de los últimos n ciclos)
+        x = range(len(difs))
+        tendencia = np.polyfit(x, difs, 1)[0]  # pendiente de la regresión lineal
+
+    # Ajustar según tendencia (suavizado)
+    ajuste_tendencia = tendencia * 0.3  # solo aplicar 30% de la tendencia
+    promedio_ajustado = promedio_ponderado + ajuste_tendencia
+
+    # Limitar valores razonables
+    promedio_ajustado = max(21, min(35, promedio_ajustado))
+    
+    return int(round(promedio_ajustado)), int(round(desviacion)), tendencia
+
+def obtener_duracion_menstrual_optima(reportes, codigo):
+    """Calcula duración menstrual considerando estabilidad"""
+    df = reportes[reportes["codigo"].astype(str) == str(codigo)].copy()
+    
+    if df.empty or "duracion" not in df.columns or df["duracion"].dropna().empty:
+        return 5
+
+    duraciones = df["duracion"].dropna().astype(int).tolist()
+    
+    if len(duraciones) == 1:
+        return duraciones[0]
+    
+    # Para duración menstrual, usar moda o último valor si es estable
+    ultima_duracion = duraciones[-1]
+    
+    # Si la última duración está dentro de 1 día del promedio, confiar en ella
+    promedio = np.mean(duraciones)
+    if abs(ultima_duracion - promedio) <= 1:
+        return ultima_duracion
+    else:
+        # Si hay mucha variación, usar redondeo del promedio
+        return int(round(promedio))
+
+def predecir_proximo_ciclo(reportes, codigo):
+    """
+    Función principal de predicción que usa estrategia adaptativa
+    Retorna: fecha_predicha, rango_confianza, metadatos
+    """
+    df = reportes[reportes["codigo"].astype(str) == str(codigo)].copy()
+    
+    if df.empty:
+        return None, None, {"metodo": "sin_datos"}
+    
+    # Obtener última fecha
+    fechas = pd.to_datetime(df["fecha_periodo"], errors="coerce").dropna().sort_values()
+    if fechas.empty:
+        return None, None, {"metodo": "sin_fechas_validas"}
+    
+    ultima_fecha = fechas.iloc[-1]
+    
+    # Calcular estadísticas
+    promedio, desviacion, tendencia = calcular_estadisticas_ciclo_avanzado(reportes, codigo)
+    
+    if promedio is None:
+        # Fallback a valor por defecto
+        promedio = 28
+        desviacion = 2
+        metodo = "valor_default"
+    else:
+        metodo = "modelo_ponderado"
+    
+    # Calcular fecha predicha
+    fecha_base_prediccion = ultima_fecha + timedelta(days=promedio)
+    
+    # Ajustar según tendencia si hay suficientes datos
+    if tendencia and abs(tendencia) > 0.5 and len(fechas) >= 4:
+        ajuste_dias = int(round(tendencia * 0.5))  # ajuste conservador
+        fecha_base_prediccion += timedelta(days=ajuste_dias)
+        metodo = f"modelo_ajustado_tendencia_{ajuste_dias}"
+    
+    # Calcular rango de confianza basado en desviación
+    margen_error = min(5, desviacion)  # máximo 5 días de margen
+    fecha_minima = fecha_base_prediccion - timedelta(days=margen_error)
+    fecha_maxima = fecha_base_prediccion + timedelta(days=margen_error)
+    
+    rango_confianza = (fecha_minima, fecha_maxima)
+    
+    metadatos = {
+        "metodo": metodo,
+        "promedio_ciclo": promedio,
+        "desviacion_estandar": desviacion,
+        "tendencia": tendencia,
+        "margen_error": margen_error,
+        "ciclos_analizados": len(fechas) - 1,
+        "ultimo_ciclo": None if len(fechas) < 2 else (fechas.iloc[-1] - fechas.iloc[-2]).days
+    }
+    
+    return fecha_base_prediccion, rango_confianza, metadatos
 
 # ==============================================================
 # GRAFICACIÓN (SOLO PARA VISUALIZACIÓN)
@@ -379,8 +521,9 @@ def menu():
                 # Mostrar fecha estimada del siguiente periodo
                 datos_ciclo = calcular_fases_ciclo(reportes, codigo)
                 if datos_ciclo:
-                    siguiente_periodo = datos_ciclo["siguiente_periodo"]
-                    print(f"\n\t🩸🔮 Próximo período estimado: {siguiente_periodo.date()}")
+                    print(f"🔮 Método de predicción: {datos_ciclo['metodo_prediccion']}")
+                    print(f"📊 Ciclos analizados: {datos_ciclo['metadatos']['ciclos_analizados']}")
+                    print(f"🎯 Rango de confianza: {datos_ciclo['rango_confianza'][0].date()} a {datos_ciclo['rango_confianza'][1].date()}")
 
         elif opcion == "4":
             pacientes, reportes = cargar_datos()
