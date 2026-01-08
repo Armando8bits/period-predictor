@@ -143,6 +143,41 @@ def calcular_fases_para_fecha(reportes, codigo, fecha_consulta):
     if not ciclos_anteriores.empty:
         # Usar el ciclo más reciente anterior a la fecha consultada
         inicio_ciclo = ciclos_anteriores.iloc[-1]["fecha_periodo"]
+        
+        # Buscar si hay un registro que sea el siguiente ciclo real dentro de un rango razonable
+        ciclos_posteriores = df[df["fecha_periodo"] > fecha_consulta]
+        
+        # Definir rango máximo para considerar "siguiente ciclo" (máximo 45 días)
+        rango_maximo_dias = min(45, promedio * 2)  # Máximo 45 días o 2 veces el promedio
+        fecha_limite = fecha_consulta + timedelta(days=rango_maximo_dias)
+        
+        ciclos_posteriores_cercanos = ciclos_posteriores[ciclos_posteriores["fecha_periodo"] <= fecha_limite]
+        
+        if not ciclos_posteriores_cercanos.empty:
+            # Hay un siguiente ciclo registrado dentro de un rango razonable
+            siguiente_periodo_real = ciclos_posteriores_cercanos.iloc[0]["fecha_periodo"]
+            usar_siguiente_real = True
+            
+            # Calcular duración real entre ciclos
+            dias_entre_ciclos = (siguiente_periodo_real - inicio_ciclo).days
+            
+            # Verificar si es biológicamente razonable
+            if dias_entre_ciclos > 45:  # Ciclo muy largo
+                print(f"⚠️  Nota: Ciclo inusualmente largo de {dias_entre_ciclos} días")
+        else:
+            # No hay siguiente registro cercano, calcular basado en promedio
+            # Pero limitar la proyección a máximo 45 días
+            dias_hasta_proyeccion = min(promedio, 45)  # Máximo 45 días
+            siguiente_periodo_real = inicio_ciclo + timedelta(days=dias_hasta_proyeccion)
+            usar_siguiente_real = False
+            
+            # Verificar si hay un siguiente registro muy lejano
+            if not ciclos_posteriores.empty:
+                siguiente_lejano = ciclos_posteriores.iloc[0]["fecha_periodo"]
+                dias_hasta_lejano = (siguiente_lejano - fecha_consulta).days
+                if dias_hasta_lejano > rango_maximo_dias:
+                    print(f"ℹ️  Hay un próximo registro en {siguiente_lejano.strftime('%Y-%m-%d')} "
+                          f"(en {dias_hasta_lejano} días), usando estimación limitada")
     else:
         # Si no hay ciclos anteriores, usar el primero y proyectar hacia atrás
         inicio_ciclo = df.iloc[0]["fecha_periodo"]
@@ -150,41 +185,105 @@ def calcular_fases_para_fecha(reportes, codigo, fecha_consulta):
         dias_diferencia = (fecha_consulta - inicio_ciclo).days
         ciclos_completos = dias_diferencia // promedio
         inicio_ciclo = inicio_ciclo + timedelta(days=ciclos_completos * promedio)
+        
+        # Buscar siguiente ciclo real dentro de rango razonable
+        ciclos_posteriores = df[df["fecha_periodo"] > inicio_ciclo]
+        fecha_limite = inicio_ciclo + timedelta(days=min(45, promedio * 2))
+        ciclos_posteriores_cercanos = ciclos_posteriores[ciclos_posteriores["fecha_periodo"] <= fecha_limite]
+        
+        if not ciclos_posteriores_cercanos.empty:
+            siguiente_periodo_real = ciclos_posteriores_cercanos.iloc[0]["fecha_periodo"]
+            usar_siguiente_real = True
+        else:
+            # Proyección limitada
+            dias_hasta_proyeccion = min(promedio, 45)
+            siguiente_periodo_real = inicio_ciclo + timedelta(days=dias_hasta_proyeccion)
+            usar_siguiente_real = False
 
-    # Calcular fases basadas en el inicio del ciclo encontrado
-    duracion_folicular = 9
+    # Calcular duración del ciclo actual
+    if usar_siguiente_real:
+        duracion_ciclo_actual = (siguiente_periodo_real - inicio_ciclo).days
+    else:
+        # Para estimaciones, usar el promedio pero limitado
+        duracion_ciclo_actual = min(promedio, 45)
+
+    # --- CALCULAR FASES DE MANERA BIOLÓGICAMENTE PRECISA ---
+    
+    # 1. FASE MENSTRUAL: ya tenemos duracion_menstrual
+    duracion_menstrual_actual = duracion_menstrual
+    
+    # 2. FASE LÚTEA: relativamente constante (10-16 días)
+    # Usar 14 días como valor típico, o ajustar según duración del ciclo
+    if duracion_ciclo_actual <= 28:
+        duracion_lutea = 12  # Ciclos cortos suelen tener fase lútea más corta
+    elif duracion_ciclo_actual <= 35:
+        duracion_lutea = 14  # Valor típico
+    else:
+        duracion_lutea = 16  # Ciclos largos pueden tener fase lútea más larga
+    
+    # 3. FASE DE OVULACIÓN: fija (2-3 días)
     duracion_ovulacion = 2
-    duracion_lutea = promedio - (duracion_menstrual + duracion_folicular + duracion_ovulacion)
-
-    # Asegurar duración lútea mínima
-    if duracion_lutea < 10:
-        duracion_lutea = 10
-        duracion_folicular = promedio - (duracion_menstrual + duracion_ovulacion + duracion_lutea)
+    
+    # 4. FASE FOLICULAR: variable, calculamos lo que queda
+    duracion_folicular = duracion_ciclo_actual - (duracion_menstrual_actual + duracion_ovulacion + duracion_lutea)
+    
+    # Asegurar duraciones mínimas biológicamente posibles
+    if duracion_folicular < 7:  # Mínimo biológico para fase folicular
+        # Ajustar fase lútea para dar espacio a la folicular
+        duracion_lutea = duracion_ciclo_actual - (duracion_menstrual_actual + duracion_ovulacion + 7)
+        duracion_folicular = 7
+        
+        if duracion_lutea < 10:  # Si la lútea queda muy corta
+            duracion_lutea = 10
+            # Recalcular ciclo completo si es necesario
+            duracion_ciclo_actual = duracion_menstrual_actual + duracion_folicular + duracion_ovulacion + duracion_lutea
+            if not usar_siguiente_real:
+                siguiente_periodo_real = inicio_ciclo + timedelta(days=duracion_ciclo_actual)
+    
+    # Asegurar que la fase lútea no sea excesivamente larga
+    if duracion_lutea > 18:  # Más de 18 días es inusual
+        duracion_lutea = 16
+        duracion_folicular = duracion_ciclo_actual - (duracion_menstrual_actual + duracion_ovulacion + duracion_lutea)
 
     fases = {
-        "Menstrual": (inicio_ciclo, inicio_ciclo + timedelta(days=duracion_menstrual - 1)),
-        "Folicular": (inicio_ciclo + timedelta(days=duracion_menstrual),
-                      inicio_ciclo + timedelta(days=duracion_menstrual + duracion_folicular - 1)),
-        "Ovulación": (inicio_ciclo + timedelta(days=duracion_menstrual + duracion_folicular),
-                      inicio_ciclo + timedelta(days=duracion_menstrual + duracion_folicular + duracion_ovulacion - 1)),
-        "Lútea": (inicio_ciclo + timedelta(days=duracion_menstrual + duracion_folicular + duracion_ovulacion),
-                  inicio_ciclo + timedelta(days=promedio - 1))
+        "Menstrual": (inicio_ciclo, inicio_ciclo + timedelta(days=duracion_menstrual_actual - 1)),
+        "Folicular": (inicio_ciclo + timedelta(days=duracion_menstrual_actual),
+                      inicio_ciclo + timedelta(days=duracion_menstrual_actual + duracion_folicular - 1)),
+        "Ovulación": (inicio_ciclo + timedelta(days=duracion_menstrual_actual + duracion_folicular),
+                      inicio_ciclo + timedelta(days=duracion_menstrual_actual + duracion_folicular + duracion_ovulacion - 1)),
+        "Lútea": (inicio_ciclo + timedelta(days=duracion_menstrual_actual + duracion_folicular + duracion_ovulacion),
+                  inicio_ciclo + timedelta(days=duracion_ciclo_actual - 1))
     }
 
     df_fases = pd.DataFrame([
         {"fase": fase, "inicio": fechas[0], "fin": fechas[1]} for fase, fechas in fases.items()
     ])
 
-    siguiente_periodo = inicio_ciclo + timedelta(days=promedio)
+    # Calcular siguiente ciclo después de este
+    if usar_siguiente_real:
+        # Si usamos datos reales, proyectar el siguiente basado en promedio
+        siguiente_despues_del_real = siguiente_periodo_real + timedelta(days=promedio)
+    else:
+        # Si ya estamos estimando, continuar estimando
+        siguiente_despues_del_real = siguiente_periodo_real + timedelta(days=promedio)
 
     return {
         "promedio": promedio,
         "desviacion": desviacion,
-        "duracion_menstrual": duracion_menstrual,
+        "duracion_menstrual": duracion_menstrual_actual,
+        "duracion_folicular": duracion_folicular,
+        "duracion_ovulacion": duracion_ovulacion,
+        "duracion_lutea": duracion_lutea,
         "fases": df_fases,
         "inicio_ciclo": inicio_ciclo,
-        "siguiente_periodo": siguiente_periodo,
-        "fecha_consulta": fecha_consulta
+        "siguiente_periodo": siguiente_periodo_real,
+        "fecha_consulta": fecha_consulta,
+        "usar_siguiente_real": usar_siguiente_real,
+        "duracion_ciclo_actual": duracion_ciclo_actual,
+        "hay_registro_lejano": not ciclos_posteriores.empty if 'ciclos_posteriores' in locals() else False,
+        "siguiente_lejano": ciclos_posteriores.iloc[0]["fecha_periodo"] if not ciclos_posteriores.empty and 'ciclos_posteriores' in locals() else None,
+        "siguiente_despues_del_real": siguiente_despues_del_real,
+        "es_estimacion_limitada": not usar_siguiente_real and duracion_ciclo_actual < promedio
     }
 
 def calcular_fases_siguientes(reportes, codigo):
@@ -319,6 +418,7 @@ def graficar_fases_por_fecha(reportes, codigo, fechas_consulta):
 def graficar_ciclo_completo(reportes, codigo, fecha_referencia=None):
     """
     Grafica un ciclo completo a partir de una fecha de referencia
+    Incluye el siguiente período menstrual si corresponde
     """
     if fecha_referencia is None:
         fecha_referencia = datetime.now()
@@ -328,9 +428,19 @@ def graficar_ciclo_completo(reportes, codigo, fecha_referencia=None):
         print("❌ No hay datos para graficar.")
         return
 
-    # Crear rango de fechas para un ciclo completo
+    siguiente_periodo = datos_ciclo["siguiente_periodo"]
+    usar_siguiente_real = datos_ciclo["usar_siguiente_real"]
+    hay_registro_lejano = datos_ciclo.get("hay_registro_lejano", False)
+    siguiente_lejano = datos_ciclo.get("siguiente_lejano")
+    
+    # Crear rango de fechas para el ciclo actual y el inicio del siguiente
     inicio_ciclo = datos_ciclo["inicio_ciclo"]
-    fin_ciclo = inicio_ciclo + timedelta(days=datos_ciclo["promedio"])
+    fin_ciclo = siguiente_periodo + timedelta(days=datos_ciclo["duracion_menstrual"] - 1)
+    
+    # Extender un poco si hay registro lejano para mostrar
+    if hay_registro_lejano and siguiente_lejano and (siguiente_lejano - fin_ciclo).days < 15:
+        fin_ciclo = siguiente_lejano + timedelta(days=datos_ciclo["duracion_menstrual"] - 1)
+    
     rango_ciclo = pd.date_range(inicio_ciclo, fin_ciclo, freq="D")
 
     # --- Colores de fases ---
@@ -341,10 +451,10 @@ def graficar_ciclo_completo(reportes, codigo, fecha_referencia=None):
         "Lútea": "skyblue"
     }
 
-    fig, ax = plt.subplots(figsize=(12, 4))
+    fig, ax = plt.subplots(figsize=(16, 5))
     fig.canvas.manager.set_window_title("Ciclo Menstrual Completo")
 
-    # Dibujar cada fase
+    # Dibujar fases del ciclo actual
     for _, fase in datos_ciclo["fases"].iterrows():
         inicio = fase["inicio"]
         fin = fase["fin"] + timedelta(days=1)  # Incluir el último día
@@ -356,19 +466,142 @@ def graficar_ciclo_completo(reportes, codigo, fecha_referencia=None):
         ax.text(centro, 0.5, fase["fase"], ha="center", va="center", 
                 fontsize=10, fontweight='bold', color='black')
 
+    # Dibujar el siguiente período menstrual si está en el rango
+    if siguiente_periodo <= fin_ciclo:
+        inicio_menstrual = siguiente_periodo
+        fin_menstrual = siguiente_periodo + timedelta(days=datos_ciclo["duracion_menstrual"] - 1)
+        
+        # Determinar color y transparencia basado en si es real o estimado
+        if usar_siguiente_real:
+            color_menstrual = colores_fases["Menstrual"]
+            alpha_menstrual = 0.7
+        else:
+            color_menstrual = "lightpink"  # Color más claro para estimación
+            alpha_menstrual = 0.4
+        
+        ax.axvspan(inicio_menstrual, fin_menstrual + timedelta(days=1), 
+                  color=color_menstrual, alpha=alpha_menstrual)
+        
+        # Etiqueta del siguiente período
+        centro_menstrual = inicio_menstrual + (fin_menstrual - inicio_menstrual) / 2
+        etiqueta_siguiente = "Menstrual (real)" if usar_siguiente_real else "Menstrual (estim.)"
+        ax.text(centro_menstrual, 0.5, etiqueta_siguiente, ha="center", va="center", 
+                fontsize=9, fontweight='bold', color='black')
+
     # Marcar fecha de referencia
     ax.axvline(fecha_referencia, color="red", linestyle="-", linewidth=2, label='Fecha de referencia')
+    
+    # Marcar inicio del siguiente ciclo
+    if usar_siguiente_real:
+        color_linea = "darkgreen"
+        estilo_linea = "-"
+        etiqueta_linea = "Próx. ciclo (real)"
+    else:
+        color_linea = "darkorange"
+        estilo_linea = "--"
+        etiqueta_linea = "Próx. ciclo (estimado)"
+    
+    ax.axvline(siguiente_periodo, color=color_linea, linestyle=estilo_linea, linewidth=1.5, 
+               label=etiqueta_linea)
+    
+    # Marcar siguiente registro lejano si existe
+    # Versión MÁS SEGURA - usar annotate con clip_on=False
+    if hay_registro_lejano and siguiente_lejano and siguiente_lejano > siguiente_periodo:
+        ax.axvline(siguiente_lejano, color="purple", linestyle=":", linewidth=1.2, 
+                label='Siguiente registro lejano')
+        
+        dias_diferencia = (siguiente_lejano - siguiente_periodo).days
+        
+        # Usar annotate con clip_on=False para que no afecte los límites
+        ax.annotate(f"+{dias_diferencia} días", 
+                xy=(siguiente_lejano, 1),  # Punto de anclaje (en la parte superior)
+                xycoords=('data', 'axes fraction'),  # x en datos, y en fracción de eje
+                xytext=(0, 5),  # 5 puntos hacia arriba
+                textcoords='offset points',
+                ha='center', va='bottom', fontsize=8, color='purple',
+                bbox=dict(boxstyle='round,pad=0.2', facecolor='white', alpha=0.7),
+                clip_on=False)  # ¡IMPORTANTE! No recortar ni afectar límites
 
-    ax.set_xlim(inicio_ciclo, fin_ciclo)
-    ax.set_xticks(pd.date_range(inicio_ciclo, fin_ciclo, freq='5D'))
-    ax.set_xticklabels([d.strftime("%Y-%m-%d") for d in pd.date_range(inicio_ciclo, fin_ciclo, freq='5D')], rotation=45)
+        #ax.set_xlim(inicio_ciclo, fin_ciclo)
+    
+    # Ajustar ticks de fecha para mejor visualización
+    dias_total = (fin_ciclo - inicio_ciclo).days
+    if dias_total > 90:
+        freq_ticks = '14D'
+    elif dias_total > 60:
+        freq_ticks = '10D'
+    elif dias_total > 40:
+        freq_ticks = '7D'
+    else:
+        freq_ticks = '5D'
+    
+    ax.set_xticks(pd.date_range(inicio_ciclo, fin_ciclo, freq=freq_ticks))
+    ax.set_xticklabels([d.strftime("%Y-%m-%d") for d in pd.date_range(inicio_ciclo, fin_ciclo, freq=freq_ticks)], 
+                       rotation=45)
+    
     ax.set_yticks([])
-    ax.set_title(f"Ciclo Menstrual — Paciente {codigo}\n(Duración: {datos_ciclo['promedio']} días)", fontsize=12)
-    ax.legend(loc='upper right')
+    
+    # Información del título
+    fuente_datos = "REAL" if usar_siguiente_real else "ESTIMADO"
+    titulo = f"Ciclo Menstrual — Paciente {codigo} | Próximo ciclo: {fuente_datos}\n"
+    titulo += f"Duración ciclo: {datos_ciclo['duracion_ciclo_actual']} días | "
+    titulo += f"Duración menstrual: {datos_ciclo['duracion_menstrual']} días | "
+    titulo += f"Promedio histórico: {datos_ciclo['promedio']} días"
+    ax.set_title(titulo, fontsize=11)
+
+    # Leyenda mejorada
+    legend_elements = [
+        Patch(facecolor='lightcoral', label='Menstrual (actual)'),
+        Patch(facecolor='lightpink', label='Menstrual (estimado)', alpha=0.4),
+        Patch(facecolor='gold', label='Folicular'),
+        Patch(facecolor='limegreen', label='Ovulación'),
+        Patch(facecolor='skyblue', label='Lútea'),
+        Line2D([0], [0], color='red', linestyle='-', lw=2, label='Fecha consultada'),
+        Line2D([0], [0], color='darkgreen', linestyle='-', lw=1.5, label='Próx. ciclo (real)'),
+        Line2D([0], [0], color='darkorange', linestyle='--', lw=1.5, label='Próx. ciclo (estimado)'),
+    ]
+    
+    if hay_registro_lejano and siguiente_lejano and siguiente_lejano > siguiente_periodo:
+        legend_elements.append(
+            Line2D([0], [0], color='purple', linestyle=':', lw=1.2, label='Siguiente registro lejano')
+        )
+    
+    ax.legend(handles=legend_elements, loc='upper right', fontsize=9)
+
+    # Información adicional
+    info_text = f"Consulta: {fecha_referencia.strftime('%Y-%m-%d')}\n"
+    info_text += f"Inicio ciclo: {inicio_ciclo.strftime('%Y-%m-%d')}\n"
+    info_text += f"Próximo ciclo: {siguiente_periodo.strftime('%Y-%m-%d')}\n"
+
+    if usar_siguiente_real:
+        info_text += f"Fuente: Registro real\n"
+    else:
+        if datos_ciclo.get("es_estimacion_limitada", False):
+            info_text += f"Fuente: Estimación limitada\n"
+        else:
+            info_text += f"Fuente: Estimación basada en promedio\n"
+
+    info_text = f"Consulta: {fecha_referencia.strftime('%Y-%m-%d')}\n"
+    info_text += f"Inicio ciclo: {inicio_ciclo.strftime('%Y-%m-%d')}\n"
+    info_text += f"Próximo ciclo: {siguiente_periodo.strftime('%Y-%m-%d')}\n"
+    info_text += f"Fuente: {'Registro real' if usar_siguiente_real else 'Estimación (limitada)'}\n"
+    
+    if datos_ciclo.get("es_estimacion_limitada", False):
+        info_text += f"\n⚠️  ESTIMACIÓN LIMITADA\n"
+        info_text += f"Fase lútea limitada a {datos_ciclo['duracion_lutea']} días\n"
+        info_text += f"(máximo biológicamente razonable)\n"
+
+    if hay_registro_lejano and siguiente_lejano:
+        info_text += f"\n⚠️  Hay un próximo registro en:\n"
+        info_text += f"{siguiente_lejano.strftime('%Y-%m-%d')}\n"
+        info_text += f"(en {(siguiente_lejano - fecha_referencia).days} días)\n"
+    
+    ax.text(0.02, 0.98, info_text, transform=ax.transAxes,
+            fontsize=9, verticalalignment='top',
+            bbox=dict(boxstyle='round', facecolor='wheat', alpha=0.8))
 
     plt.tight_layout()
     plt.show()
-
 
 # ==============================================================
 # INTERFAZ DE MENÚ
