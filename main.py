@@ -107,13 +107,19 @@ def calcular_promedio_ciclo(reportes, codigo):
 
     return int(round(promedio)), int(round(desviacion))
 
-def obtener_duracion_menstrual(reportes, codigo):
-    """Obtiene la duración menstrual promedio para un paciente"""
+def obtener_duracion_menstrual(reportes, codigo, modo=None):
+    """Obtiene la duración menstrual promedio para un paciente
+    Si MODO == 1 entonces devolverá el último registro"""
+    duracion = None
     df = reportes[reportes["codigo"].astype(str) == str(codigo)].copy()
     if df.empty or "duracion" not in df.columns or df["duracion"].dropna().empty:
         return 5
     
-    return int(df["duracion"].dropna().mean())
+    if modo == 1:
+        duracion = int(df["duracion"].dropna().iloc[-1] )
+    else:
+        duracion = int(df["duracion"].dropna().mean())
+    return duracion
 
 def calcular_fases_para_fecha(reportes, codigo, fecha_consulta):
     """
@@ -288,22 +294,70 @@ def calcular_fases_para_fecha(reportes, codigo, fecha_consulta):
 
 def calcular_fases_siguientes(reportes, codigo):
     """
-    Calcula las fases del siguiente ciclo basado en el último registro.
-    (Para la opción 3 del menú)
+    Muestra las fases del ciclo actual (basado en último registro) 
+    y la predicción del próximo período.
     """
     df = reportes[reportes["codigo"].astype(str) == str(codigo)].copy()
     if df.empty:
         print("❌ No hay datos para esa paciente.")
         return None
 
-    # Usar la fecha actual para encontrar el ciclo actual
-    fecha_actual = datetime.now()
-    resultado = calcular_fases_para_fecha(reportes, codigo, fecha_actual)
+    # Obtener la última fecha registrada
+    df["fecha_periodo"] = pd.to_datetime(df["fecha_periodo"], errors="coerce")
+    df = df.dropna(subset=["fecha_periodo"]).sort_values("fecha_periodo")
     
-    if resultado is None:
+    if df.empty:
+        print("❌ No hay fechas válidas para esta paciente.")
         return None
     
-    return resultado["fases"]
+    ultima_fecha = df.iloc[-1]["fecha_periodo"]
+    
+    # Calcular estadísticas del ciclo
+    promedio, _ = calcular_promedio_ciclo(reportes, codigo)
+    if promedio is None:
+        promedio = 28
+    
+    # Obtener duración PROMEDIO menstrual del último registro
+    duracion_menstrual = obtener_duracion_menstrual(reportes, codigo,1)
+    #duracion_menstrual_ultima = obtener_duracion_menstrual(reportes, codigo, 1)
+    
+    # Calcular fases del ciclo ACTUAL (que comienza en ultima_fecha)
+    duracion_folicular = 9
+    duracion_ovulacion = 2
+    duracion_lutea = promedio - (duracion_menstrual + duracion_folicular + duracion_ovulacion)
+    
+    # Ajustar si la fase lútea es muy corta
+    if duracion_lutea < 10:
+        duracion_lutea = 10
+        duracion_folicular = promedio - (duracion_menstrual + duracion_ovulacion + duracion_lutea)
+    
+    # Calcular fechas de las fases del ciclo actual
+    fases_actual = {
+        "Menstrual": (ultima_fecha, ultima_fecha + timedelta(days=duracion_menstrual - 1)),
+        "Folicular": (ultima_fecha + timedelta(days=duracion_menstrual),
+                      ultima_fecha + timedelta(days=duracion_menstrual + duracion_folicular - 1)),
+        "Ovulación": (ultima_fecha + timedelta(days=duracion_menstrual + duracion_folicular),
+                      ultima_fecha + timedelta(days=duracion_menstrual + duracion_folicular + duracion_ovulacion - 1)),
+        "Lútea": (ultima_fecha + timedelta(days=duracion_menstrual + duracion_folicular + duracion_ovulacion),
+                  ultima_fecha + timedelta(days=promedio - 1))
+    }
+    
+    df_fases_actual = pd.DataFrame([
+        {"fase": fase, "inicio": fechas[0], "fin": fechas[1]} for fase, fechas in fases_actual.items()
+    ])
+    
+    # Calcular fecha estimada del próximo período
+    siguiente_periodo_estimado = ultima_fecha + timedelta(days=promedio)
+    
+    return {
+        "fases_actual": df_fases_actual,
+        "siguiente_periodo": siguiente_periodo_estimado,
+        "ultima_fecha": ultima_fecha,
+        "duracion_menstrual": duracion_menstrual,
+        "dias_ultima_duracón_mestrual" : duracion_menstrual,
+        "promedio_ciclo": promedio,
+        "inicio_ciclo_actual": ultima_fecha
+    }
 
 
 # ==============================================================
@@ -652,17 +706,16 @@ def menu():
         elif opcion == "3":
             pacientes, reportes = cargar_datos()
             codigo = input("Código de paciente: ")
-            df_fases = calcular_fases_siguientes(reportes, codigo)
-            if codigo is not None and df_fases is not None:
-                print("\n📅 Estimación de fases del siguiente ciclo:")
-                for _, row in df_fases.iterrows():
+            resultado = calcular_fases_siguientes(reportes, codigo)
+            
+            if resultado is not None:
+                print("\n📅 Fases del ciclo actual (basado en último registro):")
+                for _, row in resultado["fases_actual"].iterrows():
                     print(f"\t🩸 {row['fase']}: Desde\t{row['inicio'].date()} \t→ {row['fin'].date()}")
-
-                # Mostrar fecha estimada del siguiente periodo
-                datos_ciclo = calcular_fases_para_fecha(reportes, codigo, datetime.now())
-                if datos_ciclo:
-                    siguiente_periodo = datos_ciclo["siguiente_periodo"]
-                    print(f"\n\t🩸🔮 Próximo período estimado: {siguiente_periodo.date()}")
+                
+                print(f"\n\t🩸🔮 Próximo período estimado: {resultado['siguiente_periodo'].date()}")
+                print(f"\t📊 Último registro: {resultado['ultima_fecha'].date()} (por {resultado['dias_ultima_duracón_mestrual']} días)")
+                print(f"\t📈 Promedio del ciclo: {resultado['promedio_ciclo']} días")
 
         elif opcion == "4":
             pacientes, reportes = cargar_datos()
