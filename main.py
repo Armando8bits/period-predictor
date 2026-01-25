@@ -333,12 +333,12 @@ def calcular_fases_siguientes(reportes, codigo):
     
     # Calcular fechas de las fases del ciclo actual
     fases_actual = {
-        "Menstrual": (ultima_fecha, ultima_fecha + timedelta(days=duracion_menstrual - 1)),
-        "Folicular": (ultima_fecha + timedelta(days=duracion_menstrual),
-                      ultima_fecha + timedelta(days=duracion_menstrual + duracion_folicular - 1)),
-        "Ovulación": (ultima_fecha + timedelta(days=duracion_menstrual + duracion_folicular),
-                      ultima_fecha + timedelta(days=duracion_menstrual + duracion_folicular + duracion_ovulacion - 1)),
-        "Lútea": (ultima_fecha + timedelta(days=duracion_menstrual + duracion_folicular + duracion_ovulacion),
+        "Menstrual": (ultima_fecha, ultima_fecha + timedelta(days=duracion_menstrual)),
+        "Folicular": (ultima_fecha + timedelta(days=duracion_menstrual + 1),
+                      ultima_fecha + timedelta(days=duracion_menstrual + duracion_folicular)),
+        "Ovulación": (ultima_fecha + timedelta(days=duracion_menstrual + duracion_folicular + 1),
+                      ultima_fecha + timedelta(days=duracion_menstrual + duracion_folicular + duracion_ovulacion)),
+        "Lútea": (ultima_fecha + timedelta(days=duracion_menstrual + duracion_folicular + duracion_ovulacion + 1),
                   ultima_fecha + timedelta(days=promedio - 1))
     }
     
